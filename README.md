@@ -341,6 +341,168 @@ int main() {
                 std::cout << "City not found.\n";
             }
         }
+        
+FinalProjectMilestone3
+#include <iostream>
+#include <fstream>
+#include <sstream>
+#include <unordered_map>
+#include <deque>
+#include <string>
+#include <algorithm>
+#include <functional>
+
+using namespace std;
+
+int main() {
+    // TRIE SETUP
+    // TrieNode structure to build a prefix tree for city names
+    struct TrieNode {
+        unordered_map<char, TrieNode*> children;                // Each character maps to its child TrieNode
+        unordered_map<string, string> countryToPopulation;      // Maps country code to population at terminal node
+        bool isEndOfCity = false;                               // Marks the end of a valid city name
+    };
+
+    // Lambda function to insert data into the Trie
+    auto insertIntoTrie = [](TrieNode* root, const string& city, const string& country, const string& population) {
+        TrieNode* node = root;
+        for (char c : city) {
+            if (!node->children[c])
+                node->children[c] = new TrieNode(); // Create child node if it doesn't exist
+            node = node->children[c];
+        }
+        node->isEndOfCity = true; // Mark end of city
+        node->countryToPopulation[country] = population; // Store population under country code
+    };
+
+    // Lambda function to search the Trie for a city-country pair
+    auto searchTrie = [](TrieNode* root, const string& city, const string& country, string& populationOut) {
+        TrieNode* node = root;
+        for (char c : city) {
+            if (!node->children.count(c)) return false; // Character path doesn't exist
+            node = node->children[c];
+        }
+        if (node->isEndOfCity && node->countryToPopulation.count(country)) {
+            populationOut = node->countryToPopulation[country]; // Found match
+            return true;
+        }
+        return false; // Either not a complete city or country not found
+    };
+
+    // Recursively free all Trie memory
+    function<void(TrieNode*)> destroyTrie = [&](TrieNode* node) {
+        for (auto& pair : node->children) {
+            destroyTrie(pair.second); // Clean up each child recursively
+        }
+        delete node;
+    };
+
+    // CACHE SETUP (FIFO)
+    unordered_map<string, string> cache;  // Stores cache key → population
+    deque<string> cacheOrder;             // Maintains insertion order for FIFO eviction
+    const int CACHE_SIZE = 10;            // Maximum cache size
+
+    // Check if a key is in cache
+    auto getFromCache = [&](const string& key, string& value) {
+        auto it = cache.find(key);
+        if (it != cache.end()) {
+            value = it->second;
+            cout << "[Cache Hit - FIFO]" << endl;
+            return true;
+        }
+        cout << "[Cache Miss - FIFO]" << endl;
+        return false;
+    };
+
+    // Add new entry to cache and handle eviction
+    auto putInCache = [&](const string& key, const string& value) {
+        if (cache.find(key) == cache.end()) {
+            // If full, evict oldest item
+            if (cache.size() >= CACHE_SIZE) {
+                string oldKey = cacheOrder.front();
+                cacheOrder.pop_front();
+                cache.erase(oldKey);
+                cout << "[Eviction - FIFO] Removed: " << oldKey << endl;
+            }
+            cacheOrder.push_back(key); // Track insertion order
+        }
+        cache[key] = value;
+    };
+
+    //HELPER UTILITIES
+    auto toLower = [](const string& str) {
+        string lowerStr = str;
+        transform(lowerStr.begin(), lowerStr.end(), lowerStr.begin(), ::tolower);
+        return lowerStr;
+    };
+
+    // Format the cache key as "city-country" (lowercase)
+    auto makeKey = [&](const string& city, const string& country) {
+        return toLower(city) + "-" + toLower(country);
+    };
+
+    //LOAD CSV DATA INTO TRIE
+    TrieNode* trieRoot = new TrieNode();  // Initialize empty Trie
+
+    ifstream file("world_cities.csv");
+    string line;
+    getline(file, line); // Skip CSV header
+
+    while (getline(file, line)) {
+        stringstream ss(line);
+        
+        string city, country, population;
+        getline(ss, country, ',');// Read country code
+        getline(ss, city, ','); // Read city name
+        getline(ss, population, ',');   // Read population
+
+
+        // Insert the cleaned values into Trie
+        insertIntoTrie(trieRoot, toLower(city), toLower(country), population);
+    }
+
+    file.close();
+    cout << "Loaded cities into Trie.\n" << endl;
+
+    // USER INTERACTION LOOP
+    string cityInput, countryInput, population;
+    while (true) {
+        cout << "Enter city name (or 'exit'): ";
+        getline(cin, cityInput);
+        if (cityInput == "exit") break;
+
+        cout << "Enter country code: ";
+        getline(cin, countryInput);
+
+        string key = makeKey(cityInput, countryInput); // Format for cache
+
+        // 1. Try to get value from cache
+        if (getFromCache(key, population)) {
+            cout << "Population: " << population << "\n" << endl;
+            continue; // No need to query Trie
+        }
+
+        // 2. Search the Trie if cache misses
+        if (searchTrie(trieRoot, toLower(cityInput), toLower(countryInput), population)) {
+            cout << "Population: " << population << "\n" << endl;
+            putInCache(key, population); // Add to cache
+        } else {
+            cout << "City not found.\n" << endl;
+        }
+    }
+
+    //DISPLAY FINAL CACHE STATE
+    cout << "\n--- Final Cache Contents ---\n";
+    for (const string& k : cacheOrder) {
+        cout << k << " → " << cache[k] << endl;
+    }
+
+    // CLEAN UP MEMORY
+    destroyTrie(trieRoot);
+    cout << "\nExiting program.\n";
+
+    return 0;
+}
 
         // Display the current state of the cache
         cache->displayCache();
