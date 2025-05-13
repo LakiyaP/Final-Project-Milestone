@@ -342,6 +342,254 @@ int main() {
             }
         }
 
+#include <iostream>
+#include <fstream>
+#include <sstream>
+#include <unordered_map>
+#include <deque>
+#include <vector>
+#include <string>
+#include <algorithm>
+#include <chrono>
+#include <random>
+
+using namespace std;
+using namespace chrono;
+
+//Trie Setup
+struct TrieNode {
+    unordered_map<char, TrieNode*> children;
+    unordered_map<string, string> countryToPopulation;
+    bool isEndOfCity = false;
+};
+
+void insertTrie(TrieNode* root, const string& city, const string& country, const string& population) {
+    TrieNode* node = root;
+    for (char c : city) {
+        if (!node->children[c]) node->children[c] = new TrieNode();
+        node = node->children[c];
+    }
+    node->isEndOfCity = true;
+    node->countryToPopulation[country] = population;
+}
+
+bool searchTrie(TrieNode* root, const string& city, const string& country, string& popOut) {
+    TrieNode* node = root;
+    for (char c : city) {
+        if (!node->children.count(c)) return false;
+        node = node->children[c];
+    }
+    if (node->isEndOfCity && node->countryToPopulation.count(country)) {
+        popOut = node->countryToPopulation[country];
+        return true;
+    }
+    return false;
+}
+
+string toLower(const string& str) {
+    string result = str;
+    transform(result.begin(), result.end(), result.begin(), ::tolower);
+    return result;
+}
+
+string makeKey(const string& city, const string& country) {
+    return toLower(city) + "-" + toLower(country);
+}
+
+// Cache Interfaces
+
+class Cache {
+public:
+    virtual bool get(const string& key, string& value) = 0;
+    virtual void put(const string& key, const string& value) = 0;
+    virtual void clear() = 0;
+    virtual ~Cache() {}
+};
+
+// FIFO Cache
+class FIFOCache : public Cache {
+    unordered_map<string, string> data;
+    deque<string> order;
+    int maxSize;
+public:
+    FIFOCache(int size) : maxSize(size) {}
+    bool get(const string& key, string& value) override {
+        auto it = data.find(key);
+        if (it != data.end()) {
+            value = it->second;
+            return true;
+        }
+        return false;
+    }
+    void put(const string& key, const string& value) override {
+        if (data.find(key) == data.end()) {
+            if (data.size() >= maxSize) {
+                string oldKey = order.front();
+                order.pop_front();
+                data.erase(oldKey);
+            }
+            order.push_back(key);
+        }
+        data[key] = value;
+    }
+    void clear() override {
+        data.clear();
+        order.clear();
+    }
+};
+
+// Random Cache
+class RandomCache : public Cache {
+    unordered_map<string, string> data;
+    vector<string> keys;
+    int maxSize;
+    mt19937 rng;
+public:
+    RandomCache(int size) : maxSize(size), rng(random_device{}()) {}
+    bool get(const string& key, string& value) override {
+        auto it = data.find(key);
+        if (it != data.end()) {
+            value = it->second;
+            return true;
+        }
+        return false;
+    }
+    void put(const string& key, const string& value) override {
+        if (data.find(key) == data.end()) {
+            if (data.size() >= maxSize) {
+                uniform_int_distribution<int> dist(0, keys.size() - 1);
+                int index = dist(rng);
+                data.erase(keys[index]);
+                keys.erase(keys.begin() + index);
+            }
+            keys.push_back(key);
+        }
+        data[key] = value;
+    }
+    void clear() override {
+        data.clear();
+        keys.clear();
+    }
+};
+
+// LFU Cache
+class LFUCache : public Cache {
+    unordered_map<string, pair<string, int>> data; // key → {value, frequency}
+    int maxSize;
+public:
+    LFUCache(int size) : maxSize(size) {}
+    bool get(const string& key, string& value) override {
+        auto it = data.find(key);
+        if (it != data.end()) {
+            value = it->second.first;
+            it->second.second++;
+            return true;
+        }
+        return false;
+    }
+    void put(const string& key, const string& value) override {
+        if (data.find(key) == data.end()) {
+            if (data.size() >= maxSize) {
+                // Find least frequently used
+                int minFreq = INT_MAX;
+                string lfuKey;
+                for (auto& entry : data) {
+                    if (entry.second.second < minFreq) {
+                        lfuKey = entry.first;
+                        minFreq = entry.second.second;
+                    }
+                }
+                data.erase(lfuKey);
+            }
+        }
+        data[key] = {value, 1};
+    }
+    void clear() override {
+        data.clear();
+    }
+};
+
+//City Loader
+
+void loadCities(const string& filename, TrieNode* root, vector<pair<string, string>>& cityList) {
+    ifstream file(filename);
+    string line;
+    getline(file, line); // Skip header
+    while (getline(file, line)) {
+        stringstream ss(line);
+        string city, country, population;
+        getline(ss, city, ',');
+        getline(ss, country, ',');
+        getline(ss, population);
+        string cityLower = toLower(city);
+        string countryLower = toLower(country);
+        insertTrie(root, cityLower, countryLower, population);
+        cityList.emplace_back(cityLower, countryLower);
+    }
+}
+
+//Main Testing
+int main() {
+    const int CACHE_SIZE = 100;
+    const int NUM_QUERIES = 47891;
+    vector<string> strategies = {"fifo", "lfu", "random"};
+
+    TrieNode* trieRoot = new TrieNode();
+    vector<pair<string, string>> cityList;
+
+    loadCities("world_cities.csv", trieRoot, cityList);
+    if (cityList.empty()) {
+        cerr << "Error: No cities loaded. Did you place world_cities.csv in the correct folder?" << endl;
+        return 1;
+    }
+
+    for (const string& strategy : strategies) {
+        Cache* cache = nullptr;
+        if (strategy == "fifo") {
+            cache = new FIFOCache(CACHE_SIZE);
+        } else if (strategy == "lfu") {
+            cache = new LFUCache(CACHE_SIZE);
+        } else if (strategy == "random") {
+            cache = new RandomCache(CACHE_SIZE);
+        } else {
+            continue; // just in case
+        }
+
+        mt19937 rng(random_device{}());
+        uniform_int_distribution<int> dist(0, cityList.size() - 1);
+
+        int hits = 0;
+        long long totalTime = 0;
+
+        for (int i = 0; i < NUM_QUERIES; ++i) {
+            auto [city, country] = cityList[dist(rng)];
+            string key = makeKey(city, country);
+            string population;
+
+            auto start = high_resolution_clock::now();
+            bool found = cache->get(key, population);
+            if (!found) {
+                if (searchTrie(trieRoot, city, country, population)) {
+                    cache->put(key, population);
+                }
+            }
+            auto end = high_resolution_clock::now();
+            totalTime += duration_cast<microseconds>(end - start).count();
+
+            if (found) hits++;
+        }
+
+        cout << "=== Cache Strategy: " << strategy << " ===" << endl;
+        cout << "Total Lookups: " << NUM_QUERIES << endl;
+        cout << "Cache Hits: " << hits << endl;
+        cout << "Cache Hit Rate: " << (hits * 100.0 / NUM_QUERIES) << "%" << endl;
+        cout << "Average Lookup Time: " << (totalTime / NUM_QUERIES) << " µs" << endl << endl;
+
+        delete cache;
+    }
+
+    return 0;
+}
         // Display the current state of the cache
         cache->displayCache();
     }
